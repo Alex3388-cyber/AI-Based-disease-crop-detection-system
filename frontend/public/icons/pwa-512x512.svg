@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AI Crop Disease Detection System leaf mark">
+  <rect width="512" height="512" rx="112" fill="#123f32"/>
+  <circle cx="256" cy="256" r="176" fill="#e4ee9b" opacity=".14"/>
+  <path d="M125 341c120 21 214-43 244-195-123-12-222 63-244 195Z" fill="#ddec82"/>
+  <path d="M144 371c43-83 110-137 200-187M233 285l-13-62m13 62 69 3" fill="none" stroke="#123f32" stroke-width="24" stroke-linecap="round"/>
+  <path d="M123 344c32 8 51 24 67 51" fill="none" stroke="#f7f5e8" stroke-width="19" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,7 @@
+# Runtime dependencies. TensorFlow is intentionally runtime-only and imported lazily.
+Flask==3.1.3
+gunicorn==23.0.0
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+tensorflow-cpu==2.18.1
+waitress==3.0.2

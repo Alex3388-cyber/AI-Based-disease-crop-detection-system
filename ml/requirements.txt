@@ -1,0 +1,6 @@
+# Python 3.11 is recommended for this pinned baseline environment.
+matplotlib==3.10.1
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+scikit-learn==1.6.1
+tensorflow-cpu==2.18.1

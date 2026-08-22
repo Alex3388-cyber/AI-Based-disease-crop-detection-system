@@ -1,0 +1,184 @@
+name: crop-disease-detection
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-crop_disease}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:-crop_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?Set POSTGRES_OWNER_PASSWORD in .env}
+      DATABASE_USER: ${DATABASE_USER:-crop_api}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      DJANGO_DATABASE_USER: ${DJANGO_DATABASE_USER:-crop_admin_app}
+      DJANGO_DATABASE_PASSWORD: ${DJANGO_DATABASE_PASSWORD:?Set DJANGO_DATABASE_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deployment/postgres/00-create-runtime-roles.sh:/docker-entrypoint-initdb.d/00-create-runtime-roles.sh:ro
+      - ./database/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./database/seeds/001_demo_unvalidated.sql:/docker-entrypoint-initdb.d/20-demo-seed.sql:ro
+      - ./deployment/postgres/90-grant-catalog-roles.sh:/docker-entrypoint-initdb.d/90-grant-catalog-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - private
+
+  ai-service:
+    build:
+      context: ./ai-service
+    restart: unless-stopped
+    environment:
+      AI_SERVICE_SECRET: ${AI_SERVICE_SECRET:?Set AI_SERVICE_SECRET in .env}
+      MODEL_DIR: /app/model
+      # Blank means trust the threshold exported with the reviewed model.
+      MODEL_CONFIDENCE_THRESHOLD: ${AI_MODEL_CONFIDENCE_THRESHOLD-}
+      MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-8388608}
+      MIN_IMAGE_DIMENSION: ${MIN_IMAGE_DIMENSION:-32}
+      MAX_IMAGE_WIDTH: ${MAX_IMAGE_WIDTH:-8192}
+      MAX_IMAGE_HEIGHT: ${MAX_IMAGE_HEIGHT:-8192}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-25000000}
+      MAX_CONCURRENT_INFERENCES: ${MAX_CONCURRENT_INFERENCES:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./ai-service/model:/app/model:ro
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 20s
+    networks:
+      - private
+
+  django-migrate:
+    build:
+      context: ./admin
+    restart: "no"
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+      DJANGO_DEBUG: "false"
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-crop_disease}
+      DATABASE_USER: ${POSTGRES_OWNER_USER:-crop_owner}
+      DATABASE_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?Set POSTGRES_OWNER_PASSWORD in .env}
+      DATABASE_SSL: "false"
+      RUNTIME_API_DATABASE_USER: ${DATABASE_USER:-crop_api}
+      RUNTIME_ADMIN_DATABASE_USER: ${DJANGO_DATABASE_USER:-crop_admin_app}
+    command: >-
+      sh -c "python manage.py migrate --noinput &&
+      python manage.py grant_runtime_permissions"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - private
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 3000
+      FRONTEND_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-crop_disease}
+      DATABASE_USER: ${DATABASE_USER:-crop_api}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      DATABASE_SSL: "false"
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      AI_SERVICE_URL: http://ai-service:5000
+      AI_SERVICE_SECRET: ${AI_SERVICE_SECRET:?Set AI_SERVICE_SECRET in .env}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-10000}
+      AI_READINESS_TIMEOUT_MS: ${AI_READINESS_TIMEOUT_MS:-2000}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-8}
+      MIN_IMAGE_DIMENSION: ${MIN_IMAGE_DIMENSION:-32}
+      MAX_IMAGE_DIMENSION: ${MAX_IMAGE_DIMENSION:-8192}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-25000000}
+      MODEL_CONFIDENCE_THRESHOLD: ${MODEL_CONFIDENCE_THRESHOLD:-0.70}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-15000}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-10000}
+      MAX_CONCURRENT_PREDICTIONS: ${MAX_CONCURRENT_PREDICTIONS:-2}
+      GENERAL_RATE_LIMIT_MAX: ${GENERAL_RATE_LIMIT_MAX:-120}
+      PREDICTION_RATE_LIMIT_MAX: ${PREDICTION_RATE_LIMIT_MAX:-10}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      TRUST_PROXY: "1"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+      django-migrate:
+        condition: service_completed_successfully
+    networks:
+      - edge
+      - private
+
+  admin:
+    build:
+      context: ./admin
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000}
+      DJANGO_ADMIN_PATH: ${DJANGO_ADMIN_PATH:-admin}
+      DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-false}
+      DJANGO_SESSION_COOKIE_SECURE: ${DJANGO_SESSION_COOKIE_SECURE:-false}
+      DJANGO_CSRF_COOKIE_SECURE: ${DJANGO_CSRF_COOKIE_SECURE:-false}
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-crop_disease}
+      DATABASE_USER: ${DJANGO_DATABASE_USER:-crop_admin_app}
+      DATABASE_PASSWORD: ${DJANGO_DATABASE_PASSWORD:?Set DJANGO_DATABASE_PASSWORD in .env}
+      DATABASE_SSL: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      django-migrate:
+        condition: service_completed_successfully
+    networks:
+      - edge
+      - private
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - edge
+
+volumes:
+  postgres_data:
+
+networks:
+  edge:
+  private:
+    internal: true
